@@ -1,4 +1,25 @@
 #!/usr/bin/env python
+'''
+In order to run the assignment, open 4 terminals, and in each one source ROS Melodic and the workspace
+(and set the Turtlebot3 model) in each one:
+$ cd ~/AIR_ws/
+$ source devel/setup.bash
+$ export TURTLEBOT3_MODEL=burger
+
+Then run the following commands in each respective terminal:
+
+Terminal 1:
+$ roslaunch MRS_236609 turtlebot3_workstations.launch
+
+Terminal 2:
+$ roslaunch turtlebot3_navigation turtlebot3_navigation.launch map_file:=$HOME/AIR_ws/src/MRS_236609/maps/map3.yaml
+
+Terminal 3:
+$ rosrun MRS_236609 assignment3_manager.py
+
+Terminal 4:
+$ rosrun MRS_236609 assignment3.py --time 5.0
+'''
 
 import rospy
 import yaml
@@ -12,6 +33,8 @@ import dynamic_reconfigure.client
 
 CUBE_EDGE = 0.5
 
+MAX_LINEAR_VELOCITY_FREE = 0.22 #[m/s]
+MAX_LINEAR_VELOCITY_HOLDING = 0.15 #[m/s]
 
 class TurtleBot:
     def __init__(self):
@@ -33,11 +56,49 @@ class TurtleBot:
 
         # ==== You can delete =======
 
-        print(tasks)
+        #print(tasks)
+        #for task in tasks:
+                
+                #if task[0:4] == 
+        #dist2aff = {}
         for w, val in ws.items():
+            #print(type(val.location))
+            #print(type(self.initial_position))
             print(w + ' center is at ' + str(val.location) + ' and its affordance center is at ' + str(
                 val.affordance_center))
+            #for task in tasks:
+
+                #if task[0:4] == 
+            print(val.tasks)
+            print(val.update_curr_aff_center_dist(self.initial_position))
+            #dist2aff[w] = self.calc_distance(val.affordance_center, self.initial_position)
+        #print(dist2aff)
+        self.calc_possible_rewards(ws, tasks, time)
+    
         # ===========================
+
+    def calc_distance(self, point1, point2):
+        return np.linalg.norm(np.array(point1) - np.array(point2))
+        #return np.linalg.norm(np.array([point1[i] - point2[i] for i in range(len(point1))]))
+    
+    def calc_possible_rewards(self, ws, tasks, time):
+        for idx, task in enumerate(tasks):
+            count = len(task)
+            acts = {'Task ' + str(idx) : []}
+            i = 0
+            while i < count:
+                curr_task = task[i:i+4]
+                locs = []
+                for w, val in ws.items():
+                    if curr_task in val.tasks:
+                        locs.append(w)
+                acts['Task ' + str(idx)].append({curr_task:locs})
+                i += 6
+            print(acts)
+            #start_act = task[:3]
+            #end_act = task[:-3]
+
+        return
 
 
 # ======================================================================================================================
@@ -58,11 +119,18 @@ class Workstation:
     def __init__(self, location, tasks):
         self.location = location
         self.tasks = tasks
-        self.affordance_center = None
+        self.affordance_center = None        
+        self.curr_aff_center_dist = None #custom addition
 
     def update_affordance_center(self, new_center):
         self.affordance_center = new_center
 
+    def update_curr_aff_center_dist(self, current_pos): #custom addition
+        self.curr_aff_center_dist = self.calc_distance(self.affordance_center, current_pos)
+        return self.curr_aff_center_dist
+    
+    def calc_distance(self, point1, point2): #custom addition
+        return np.linalg.norm(np.array(point1) - np.array(point2))
 
 # If the python node is executed as main process (sourced directly)
 if __name__ == '__main__':
