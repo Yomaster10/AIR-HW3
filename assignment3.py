@@ -146,15 +146,22 @@ class TurtleBot:
             ws_tasks[w] = val.tasks
 
         acts, rews = self.calc_possible_rewards(ws, tasks)
+
+        if self.curr_loc is None:
+            best_plan = self.make_plan(self.initial_position, acts, rews, ws_tasks, ws_locs)
+        else:
+            best_plan = self.make_plan(self.curr_loc, acts, rews, ws_tasks, ws_locs)
+    
+        i = 0
         while time.time() - self.start_time < time_thresh:
-            if self.curr_loc is None:
-                best_task = self.get_best_activity(self.initial_position, acts, rews, ws_locs, ws_tasks)
-            else:
-                best_task = self.get_best_activity(self.curr_loc, acts, rews, ws_locs, ws_tasks)
-            
-            print(best_task)
+            p = best_plan[i]
+            i += 1
+
+            #print(best_plan)
             success = True
-            for t in best_task[1:]:
+            #for p in best_plan:
+            print(p)
+            for t in p[1:]:
                 next_ws = list(t.keys())[0]
                 ws_pos = ws_locs[next_ws]
                 #result = False
@@ -167,17 +174,29 @@ class TurtleBot:
 
                 do_action = rospy.ServiceProxy('/do_action', ActionReq)
                 act = t[next_ws]
-                
+                    
                 for a in act:
                     #res = self.do_action(next_ws, a)
                     res = do_action(next_ws, a)
-                    print(a)
+                    #print(a)
                     #print(res)
                     success = success and res.success
                 
             if success:
-                acts, rews, ws_tasks = self.clear_activities(best_task, acts, rews, ws_tasks)
+                acts, rews, ws_tasks = self.clear_activities(p, acts, rews, ws_tasks)
                 print("Activity succeeded!")
+
+            if i > len(best_plan)-1:
+                best_plan = self.make_plan(self.curr_loc, acts, rews, ws_tasks, ws_locs)
+                print("New plan!")
+                i = 0
+
+            #if self.curr_loc is None:
+            #    best_plan = self.make_plan(self.initial_position, acts, rews, ws_tasks, ws_locs)
+                #best_task = self.get_best_activity(self.initial_position, acts, rews, ws_locs, ws_tasks)
+            #else:
+                
+                #best_task = self.get_best_activity(self.curr_loc, acts, rews, ws_locs, ws_tasks)
             
         # ===========================
 
@@ -199,8 +218,20 @@ class TurtleBot:
                 activities['Task ' + str(idx)].append({curr_task:locs})
                 i += 6
         return activities, rewards
+
+    def make_plan(self, current_pos, acts, rews, tasks, locs):
+        reward = 0; best_plan = []
+        best_task = self.get_best_activity(current_pos, acts, rews, tasks, locs)
+        while best_task:
+            best_plan.append(best_task)
+            reward += rews[best_task[0]]
+            final_ws = list(best_task[-1].keys())[0]
+            current_pos = locs[final_ws]
+            acts, rews, tasks = self.clear_activities(best_task, acts, rews, tasks)
+            best_task = self.get_best_activity(current_pos, acts, rews, tasks, locs)
+        return best_plan
     
-    def get_best_activity(self, current_pos, acts, rew, locs, tasks):
+    def get_best_activity(self, current_pos, acts, rews, tasks, locs):
         best_task = None; max_reward = 0
         for a in acts:
             # Step 1: Get valid sequences for each activity
@@ -230,10 +261,10 @@ class TurtleBot:
                     best_seq = l
             
             # Step 3: Compare best sequence of each activity to the global best
-            res = rew[a] - min_cost
+            res = rews[a] - min_cost
             if res > max_reward:
                 activities = [list(d.keys())[0] for d in acts[a]]
-                best_task = [a]
+                pot_best_task = [a]
                 for i in range(len(best_seq)):
                     seq = []
                     if i > 0:
@@ -241,14 +272,20 @@ class TurtleBot:
                             seq.append('PL-'+obj)
                     seq.append(activities[i])
                     if i < len(best_seq)-1:
+                        pickup_found = False
                         for j in tasks[best_seq[i]]:
                             if j[:2] == 'PU':
                                 obj = j[-1]
                                 if 'PL-'+obj in tasks[best_seq[i+1]]:
                                     seq.append(j)
-                                    break   
-                    best_task.append({best_seq[i]:seq}) 
-                max_reward = res
+                                    pickup_found = True
+                                    break
+                        if not pickup_found:
+                            break
+                    pot_best_task.append({best_seq[i]:seq})
+                if pickup_found:
+                    best_task = pot_best_task
+                    max_reward = res
 
         # Step 4: Return the best activity (and sequence) to do among all available options
         return best_task
