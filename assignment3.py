@@ -145,14 +145,16 @@ class TurtleBot:
             ws_locs[w] = val.affordance_center
             ws_tasks[w] = val.tasks
 
+        acts, rews = self.calc_possible_rewards(ws, tasks)
         while time.time() - self.start_time < time_thresh:
-            acts, rews = self.calc_possible_rewards(ws, tasks)
             if self.curr_loc is None:
                 best_task = self.get_best_activity(self.initial_position, acts, rews, ws_locs, ws_tasks)
             else:
                 best_task = self.get_best_activity(self.curr_loc, acts, rews, ws_locs, ws_tasks)
-
-            for t in best_task:
+            
+            print(best_task)
+            success = True
+            for t in best_task[1:]:
                 next_ws = list(t.keys())[0]
                 ws_pos = ws_locs[next_ws]
                 #result = False
@@ -160,15 +162,22 @@ class TurtleBot:
                 #    result = self.move_to_ws(ws_pos)
                 #    print(result)
                 result = self.move_to_ws(ws_pos)
-                if result:
-                    print('success')
+                if not result:
+                    print('Failure')
 
                 do_action = rospy.ServiceProxy('/do_action', ActionReq)
                 act = t[next_ws]
+                
                 for a in act:
                     #res = self.do_action(next_ws, a)
                     res = do_action(next_ws, a)
-                    print(res)
+                    print(a)
+                    #print(res)
+                    success = success and res.success
+                
+            if success:
+                acts, rews, ws_tasks = self.clear_activities(best_task, acts, rews, ws_tasks)
+                print("Activity succeeded!")
             
         # ===========================
 
@@ -224,7 +233,7 @@ class TurtleBot:
             res = rew[a] - min_cost
             if res > max_reward:
                 activities = [list(d.keys())[0] for d in acts[a]]
-                best_task = []
+                best_task = [a]
                 for i in range(len(best_seq)):
                     seq = []
                     if i > 0:
@@ -243,6 +252,43 @@ class TurtleBot:
 
         # Step 4: Return the best activity (and sequence) to do among all available options
         return best_task
+    
+    def clear_activities(self, best_task, acts, rews, tasks):
+        task = best_task[0]
+        
+        new_acts = {}
+        for a in acts:
+            if a == task:
+                continue
+            new_acts[a] = acts[a]
+
+        new_rews = {}
+        for r in rews:
+            if r == task:
+                continue
+            new_rews[r] = rews[r]
+        
+        completed_acts = {}
+        for i in range(1,len(best_task)):
+            w = list(best_task[i].keys())[0]
+            if w not in completed_acts:
+                completed_acts[w] = best_task[i][w]
+            else:
+                for j in best_task[i][w]:
+                    completed_acts[w].append(j)
+
+        new_tasks = {}
+        for t in tasks.keys():
+            if t not in completed_acts:
+                new_tasks[t] = tasks[t]
+                continue
+            new_tasks[t] = []
+            for x in tasks[t]:
+                if x in completed_acts[t]:
+                    continue
+                new_tasks[t].append(x)
+                
+        return new_acts, new_rews, new_tasks
 
 # ======================================================================================================================
 
