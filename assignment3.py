@@ -21,85 +21,228 @@ Terminal 4:
 $ rosrun MRS_236609 assignment3.py --time 5.0
 '''
 
-import rospy
-import yaml
-import os
-import argparse
+## Original imports
+import rospy, yaml, os, argparse
 import numpy as np
 
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseWithCovarianceStamped
 import dynamic_reconfigure.client
+##
+
+## Our imports
+import time, actionlib
+from nav_msgs.msg import Odometry #, OccupancyGrid
+from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+from MRS_236609.srv import ActionReq, ActionReqResponse
+##
 
 CUBE_EDGE = 0.5
-
 MAX_LINEAR_VELOCITY_FREE = 0.22 #[m/s]
 MAX_LINEAR_VELOCITY_HOLDING = 0.15 #[m/s]
 
+"""
+def euler_from_quaternion(quaternion):
+    q0, q1, q2, q3 = quaternion
+    roll = np.arctan2(2 * (q0 * q1 + q2 * q3), 1 - 2 * (q1 ** 2 + q2 ** 2))
+    pitch = np.arcsin(2 * (q0 * q2 - q3 * q1))
+    yaw = np.arctan2(2 * (q0 * q3 + q1 * q2), 1 - 2 * (q2 ** 2 + q3 ** 2))
+    return roll, pitch, yaw
+
+class Pose:
+    #x = None; y = None; yaw = None
+    def __init__(self):
+        self.x = 0
+        self.y = 0
+        self.yaw = 0
+
+    def update(self, data):
+        odom = data.pose.pose
+        self.x, self.y = odom.position.x, odom.position.y
+        self.yaw = euler_from_quaternion([odom.orientation.x, odom.orientation.z, odom.orientation.z, odom.orientation.w])[2]
+
+# save the turtlebot's place as global
+pose = Pose()
+"""
+
 class TurtleBot:
     def __init__(self):
+        self.start_time = time.time()
+        
+        self.curr_loc = None
+        rospy.Subscriber('/odom', Odometry, callback=self.update_loc)
+
+        self.action_client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
+
+        self.time = None
         self.initial_position = None
         rospy.Subscriber('/initialpose', PoseWithCovarianceStamped, callback=self.set_initial_position)
-        self.time = None
-
+        
         print("Waiting for an initial position...")
         while self.initial_position is None:
             continue
-        print("The initial position is {}".format(self.initial_position))
+        print("\tThe initial position is {}".format(self.initial_position))
+
+        #self.curr_loc = self.initial_position
+        #self.do_action = rospy.ServiceProxy('/do_action', ActionReq)
 
     def set_initial_position(self, msg):
         initial_pose = msg.pose.pose
         self.initial_position = np.array([initial_pose.position.x, initial_pose.position.y])
 
-    def run(self, ws, tasks, time):
-        self.time = time
+    def update_loc(self, msg):
+        odom = msg.pose.pose
+        self.curr_loc = [odom.position.x, odom.position.y]
 
-        # ==== You can delete =======
+    def server_unavailable(self):
+        if time.time() - self.start_time > 100:
+            rospy.logerr("Action server is unavailable")
+            rospy.signal_shutdown("Action server is unavailable")
+            return True
+        return False
 
-        #print(tasks)
-        #for task in tasks:
-                
-                #if task[0:4] == 
-        #dist2aff = {}
+    def add_goal(self, x, y, yaw=1.0):
+        # Creates a new goal with the MoveBaseGoal constructor
+        goal = MoveBaseGoal()
+        goal.target_pose.header.frame_id = "map"
+        goal.target_pose.header.stamp = rospy.Time.now()
+        goal.target_pose.pose.position.x = x
+        goal.target_pose.pose.position.y = y
+        goal.target_pose.pose.orientation.w = yaw
+
+        self.action_client.send_goal(goal)
+        print("New goal command received...")
+
+    def move_to_ws(self, pos, threshold=0.1):
+        self.action_client.wait_for_server()
+        self.add_goal(pos[0], pos[1])
+        if self.curr_loc is None:
+            curr_pos = self.initial_position
+        else:
+            curr_pos = self.curr_loc
+        while np.linalg.norm(np.array([pos[0] - curr_pos[0], pos[1] - curr_pos[1]])) > threshold:
+            wait = self.action_client.wait_for_result()
+            #print(self.curr_loc)
+            curr_pos = self.curr_loc
+
+        #print(wait)
+            #if self.server_unavailable():
+            #    exit(1)
+            #else:
+        #if wait:
+        return self.action_client.get_result()
+        #else:
+        #    return False
+
+    def run(self, ws, tasks, time_thresh):
+        self.time = time_thresh
+
+        # ==== Custom =======
+        ws_locs = {}; ws_tasks = {}
         for w, val in ws.items():
-            #print(type(val.location))
-            #print(type(self.initial_position))
-            print(w + ' center is at ' + str(val.location) + ' and its affordance center is at ' + str(
-                val.affordance_center))
-            #for task in tasks:
+            #print(w + ' center is at ' + str(val.location) + ' and its affordance center is at ' + str(
+            #    val.affordance_center))
+            ws_locs[w] = val.affordance_center
+            ws_tasks[w] = val.tasks
 
-                #if task[0:4] == 
-            print(val.tasks)
-            print(val.update_curr_aff_center_dist(self.initial_position))
-            #dist2aff[w] = self.calc_distance(val.affordance_center, self.initial_position)
-        #print(dist2aff)
-        self.calc_possible_rewards(ws, tasks, time)
-    
+        while time.time() - self.start_time < time_thresh:
+            acts, rews = self.calc_possible_rewards(ws, tasks)
+            if self.curr_loc is None:
+                best_task = self.get_best_activity(self.initial_position, acts, rews, ws_locs, ws_tasks)
+            else:
+                best_task = self.get_best_activity(self.curr_loc, acts, rews, ws_locs, ws_tasks)
+
+            for t in best_task:
+                next_ws = list(t.keys())[0]
+                ws_pos = ws_locs[next_ws]
+                #result = False
+                #while not result:
+                #    result = self.move_to_ws(ws_pos)
+                #    print(result)
+                result = self.move_to_ws(ws_pos)
+                if result:
+                    print('success')
+
+                do_action = rospy.ServiceProxy('/do_action', ActionReq)
+                act = t[next_ws]
+                for a in act:
+                    #res = self.do_action(next_ws, a)
+                    res = do_action(next_ws, a)
+                    print(res)
+            
         # ===========================
 
     def calc_distance(self, point1, point2):
         return np.linalg.norm(np.array(point1) - np.array(point2))
-        #return np.linalg.norm(np.array([point1[i] - point2[i] for i in range(len(point1))]))
     
-    def calc_possible_rewards(self, ws, tasks, time):
+    def calc_possible_rewards(self, ws, tasks):
+        activities = {}; rewards = {}
         for idx, task in enumerate(tasks):
-            count = len(task)
-            acts = {'Task ' + str(idx) : []}
-            i = 0
-            while i < count:
+            task_name = 'Task ' + str(idx)
+            rewards[task_name] = tasks[task]
+            i = 0; activities[task_name] = []
+            while i < len(task):
                 curr_task = task[i:i+4]
                 locs = []
                 for w, val in ws.items():
                     if curr_task in val.tasks:
                         locs.append(w)
-                acts['Task ' + str(idx)].append({curr_task:locs})
+                activities['Task ' + str(idx)].append({curr_task:locs})
                 i += 6
-            print(acts)
-            #start_act = task[:3]
-            #end_act = task[:-3]
+        return activities, rewards
+    
+    def get_best_activity(self, current_pos, acts, rew, locs, tasks):
+        best_task = None; max_reward = 0
+        for a in acts:
+            # Step 1: Get valid sequences for each activity
+            last = [[b] for b in list(acts[a][0].values())[0]]
+            for i in range(1,len(acts[a])):
+                new = []
+                y = list(acts[a][i].keys())[0]
+                for d in acts[a][i][y]:
+                    for l in last:
+                        if d == l[-1]: # can't remain at the same workstation
+                            continue  
+                        next_l = list(np.copy(l))
+                        next_l.append(d)
+                        new.append(next_l)
+                last = new
 
-        return
+            # Step 2: Get best sequence for each activity
+            best_seq = None; min_cost = 10000
+            for l in last:
+                cost = 0
+                prev_loc = current_pos
+                for i in l:
+                    cost += self.calc_distance(locs[i], prev_loc)
+                    prev_loc = locs[i]
+                if cost < min_cost:
+                    min_cost = cost
+                    best_seq = l
+            
+            # Step 3: Compare best sequence of each activity to the global best
+            res = rew[a] - min_cost
+            if res > max_reward:
+                activities = [list(d.keys())[0] for d in acts[a]]
+                best_task = []
+                for i in range(len(best_seq)):
+                    seq = []
+                    if i > 0:
+                        if 'PL-'+obj in tasks[best_seq[i]]:
+                            seq.append('PL-'+obj)
+                    seq.append(activities[i])
+                    if i < len(best_seq)-1:
+                        for j in tasks[best_seq[i]]:
+                            if j[:2] == 'PU':
+                                obj = j[-1]
+                                if 'PL-'+obj in tasks[best_seq[i+1]]:
+                                    seq.append(j)
+                                    break   
+                    best_task.append({best_seq[i]:seq}) 
+                max_reward = res
 
+        # Step 4: Return the best activity (and sequence) to do among all available options
+        return best_task
 
 # ======================================================================================================================
 
@@ -114,23 +257,22 @@ def analyse_res(msg):
             result[key] = [x, y]
     return result
 
-
 class Workstation:
     def __init__(self, location, tasks):
         self.location = location
         self.tasks = tasks
         self.affordance_center = None        
-        self.curr_aff_center_dist = None #custom addition
+        #self.curr_aff_center_dist = None #custom addition
 
     def update_affordance_center(self, new_center):
         self.affordance_center = new_center
 
-    def update_curr_aff_center_dist(self, current_pos): #custom addition
-        self.curr_aff_center_dist = self.calc_distance(self.affordance_center, current_pos)
-        return self.curr_aff_center_dist
+    #def update_curr_aff_center_dist(self, current_pos): #custom addition
+    #    self.curr_aff_center_dist = self.calc_distance(self.affordance_center, current_pos)
+    #    return self.curr_aff_center_dist
     
-    def calc_distance(self, point1, point2): #custom addition
-        return np.linalg.norm(np.array(point1) - np.array(point2))
+    #def calc_distance(self, point1, point2): #custom addition
+    #    return np.linalg.norm(np.array(point1) - np.array(point2))
 
 # If the python node is executed as main process (sourced directly)
 if __name__ == '__main__':
@@ -143,7 +285,7 @@ if __name__ == '__main__':
         default=2.0,
     )
     args = CLI.parse_args()
-    time = args.time
+    time_thresh = args.time
 
     gcm_client = dynamic_reconfigure.client.Client("/move_base/global_costmap/inflation_layer")
     gcm_client.update_configuration({"inflation_radius": 0.2})
@@ -171,4 +313,7 @@ if __name__ == '__main__':
         tasks = data['tasks']
 
     tb3 = TurtleBot()
-    tb3.run(ws, tasks, time)
+    try:
+        tb3.run(ws, tasks, time_thresh)
+    except rospy.ROSInterruptException:
+        rospy.loginfo("Navigation Exception.")
