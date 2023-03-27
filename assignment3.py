@@ -112,8 +112,7 @@ class TurtleBot:
         
     def get_current_reward(self):
         msg = rospy.wait_for_message('/current_cost', String, timeout=5)
-        res = msg.data.split("reward: ")
-        return res[1]
+        return msg.data.split("reward: ")[1]
 
     def run(self, ws, tasks, time_thresh):
         self.time = time_thresh
