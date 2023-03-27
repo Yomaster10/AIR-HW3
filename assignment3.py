@@ -124,7 +124,6 @@ class TurtleBot:
             ws_tasks[w] = val.tasks
 
         acts, rews = self.calc_possible_rewards(ws, tasks)
-
         act_costs = {'ACT1':1, 'ACT2':1, 'ACT3':1, 'ACT4':1, 'PU-A':0, 'PL-A':0, 'PU-B':0, 'PL-B':0, 'PU-C':0, 'PL-C':0}
         Res = self.calc_base(acts, rews, ws_tasks, ws_locs, act_costs)
         print(Res)
