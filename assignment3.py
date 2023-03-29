@@ -18,7 +18,7 @@ Terminal 3:
 $ rosrun MRS_236609 assignment3_manager.py
 
 Terminal 4:
-$ rosrun MRS_236609 assignment3.py --time 200.0
+$ rosrun MRS_236609 assignment3.py --time 300.0
 '''
 
 ## Original imports
@@ -92,12 +92,13 @@ class TurtleBot:
     def run(self, ws, tasks, time_thresh):
         """ This function is the main bulk of our implementation, it acts as our solver """
         
-        ## Step 1: Acquire workstation and task info, and construct the lookup table
+        ## Step 1: Acquire workstation and task info.
         ws_locs = {}; ws_tasks = {}
         for w, val in ws.items():
             ws_locs[w] = val.affordance_center
             ws_tasks[w] = val.tasks
 
+        ## Step 2: Construct the lookup table
         self.ws_plans = self.calc_ws_plans(ws_locs)
         acts, rews = self.calc_possible_rewards(ws, tasks)
         max_rew = sum(rews.values())
@@ -114,44 +115,44 @@ class TurtleBot:
                 item_copy['Time'] = int(round(item_copy['Time']))
                 print("{}".format(item_copy))
 
-        ## Step 2: Choose the next best task and execute it in a loop, until time runs out
+        ## Step 3: Choose the next best task and execute it in a loop, until time runs out
         print("\nBeginning Run...")
         while time.time() - self.start_time < time_thresh and len(Res) > 0:
             
-            ## Step 2.1: Choose the best task and activity sequence to tackle
+            ## Step 3.1: Choose the best task and activity sequence to tackle
             best_task, best_seq = self.get_best_task(self.curr_loc, ws_locs, time_thresh - (time.time() - self.start_time), Res)
-            if best_task == None:
+            if best_task == None: # there are no tasks left that can be completed in the remaining time
                 break
             print('\tAttempting ' + best_task + '...')
 
             # Activity sequence visualization
-            markerArray = self.create_waypoint_marker_array(self.curr_loc, best_seq, ws_locs)
+            markerArray = self.create_plan_marker_array(self.curr_loc, best_seq, ws_locs)
             self.plan_marker = markerArray
 
-            ## Step 2.2: Get the current reward accumulated 
+            ## Step 3.2: Get the current reward accumulated 
             curr_reward = self.get_current_reward()
             print("\t\tCurrent Reward: " + str(curr_reward))
             if int(curr_reward) == max_rew:
                 print("\t\tMax. Reward Already Achieved\n")
                 break
 
-            ## Step 2.3: Attempt to execute the desired activity sequence (task)
+            ## Step 3.3: Attempt to execute the desired activity sequence (task)
             for b in best_seq:
                 if time.time() - self.start_time > time_thresh:
                     break
                 
-                ## Step 2.3.1: Determine what workstation we need to go to
+                ## Step 3.3.1: Determine what workstation we need to go to
                 next_ws = list(b.values())[0]
                 ws_pos = ws_locs[next_ws]
         
-                ## Step 2.3.2: If not at the desired workstation already, attempt navigation
+                ## Step 3.3.2: If not at the desired workstation already, attempt navigation
                 if self.latest_ws != next_ws:
                     print("\t\tCommencing Navigation...")
                     result = self.move_to_ws(ws_pos)
                     if not result:
                         print("\t\t\t...Navigation Failure (already located at the desired position)")
 
-                ## Step 2.3.3: Execute the desired activity
+                ## Step 3.3.3: Execute the desired activity
                 do_action = rospy.ServiceProxy('/do_action', ActionReq)
                 act = list(b.keys())[0]
                 print("\t\tCommencing Action...")
@@ -160,11 +161,11 @@ class TurtleBot:
                     print("\t\t\t...Action Failure (conditions aren't met)")
                 self.latest_ws = next_ws
 
-            ## Step 2.4: Get the current reward (after the activity sequence)
+            ## Step 3.4: Get the current reward (after the activity sequence)
             new_reward = self.get_current_reward()
             print("\t\tNew Reward: " + str(new_reward))
 
-            ## Step 2.5: If the current reward is higher than the previous reward, the task succeeded and we remove it from the lookup table
+            ## Step 3.5: If the current reward is higher than the previous reward, the task succeeded and we remove it from the lookup table
             if curr_reward != new_reward:
                 print('\t' + best_task + ' Succeeded!\n')
                 Res.pop(best_task)
@@ -204,6 +205,7 @@ class TurtleBot:
         return np.linalg.norm(np.array(point1) - np.array(point2))
 
     def calc_ws_plans(self, locs):
+        """ Retrieves motion plans between each pair of workstations """
         ws_plans = {}
         for ws1 in locs:
             ws_plans[ws1] = {}
@@ -215,6 +217,7 @@ class TurtleBot:
         return ws_plans
 
     def calc_motion_plan(self, point1, point2):
+        """ Creates motion plans between a pair of points (without executing it) """
         start = PoseStamped()
         start.header.seq = 0
         start.header.frame_id = "map"
@@ -239,6 +242,7 @@ class TurtleBot:
         return resp.plan.poses
     
     def calc_cost(self, plan, velocity):
+        """ Calculates the cost of a motion plan, given the (max.) velocity along the path """
         M = 0; T= 0; i = 0
         for p in range(len(plan)-1):
             x1 = plan[p].pose.position.x
@@ -261,52 +265,6 @@ class TurtleBot:
             pos1 = pos2
         M = 0 # this should be the case, but for some reason we get weird results from the costmap
         return T + M, T
-
-    """
-    def calc_cost(self, point1, point2, velocity):
-        start = PoseStamped()
-        start.header.seq = 0
-        start.header.frame_id = "map"
-        start.header.stamp = rospy.Time(0)
-        start.pose.position.x = point1[0]
-        start.pose.position.y = point1[1]
-
-        goal = PoseStamped()
-        goal.header.seq = 0
-        goal.header.frame_id = "map"
-        goal.header.stamp = rospy.Time(0)
-        goal.pose.position.x = point2[0]
-        goal.pose.position.y = point2[1]
-
-        get_plan = rospy.ServiceProxy('/move_base/make_plan', nav_msgs.srv.GetPlan)
-        req = nav_msgs.srv.GetPlan()
-        req.start = start
-        req.goal = goal
-        req.tolerance = 1.0 #.5
-        resp = get_plan(req.start, req.goal, req.tolerance)
-
-        pos1 = np.array(point1)
-        M = 0; T= 0; i = 0
-        for p in range(len(resp.plan.poses)):
-            x2 = resp.plan.poses[p].pose.position.x
-            y2 = resp.plan.poses[p].pose.position.x
-            pos2 = np.array([x2,y2])
-            
-            distance = self.calc_euclidean_distance(pos1, pos2)
-            T += distance / velocity
-
-            if p == 0:
-                i += np.floor(T)
-
-            if T > i:
-                idx_x, idx_y = self.cmu.position_to_map(pos2)
-                M += self.cmu.cost_map[int(idx_x)][int(idx_y)]
-                i += 1
-            pos1 = pos2
-
-        M = 0 # this should be the case, but for some reason we get weird results from the costmap
-        return T + M, T
-    """
     
     def calc_possible_rewards(self, ws, tasks):
         """ Creates the data structures containing the reward and activity sequence information, for use in other custom-defined methods """
@@ -332,7 +290,6 @@ class TurtleBot:
             return self.calc_cost(plan, velocity)
         else:
             return 0, 0
-        #return self.calc_cost(locs[ws1], locs[ws2], velocity)
 
     def calc_sequence_cost(self, seq, acts_time):
         """ Calculates the total cost of a given activity sequence """
@@ -420,8 +377,8 @@ class TurtleBot:
         return best_task, best_seq
 
     ### VI. Visualization of the task
-    def create_waypoint_marker(self, loc1, loc2):
-        """Given the index of the nearest waypoint, publishes the necessary Marker data to the 'wp_viz' topic for RViZ visualization"""
+    def create_plan_marker(self, loc1, loc2):
+        """ Given two points, creates a Marker message containing a yellow arrow pointing from loc1 to loc2 """
         marker = Marker()
         marker.header.frame_id = "map"
         marker.header.stamp = rospy.Time.now()
@@ -429,34 +386,27 @@ class TurtleBot:
         marker.type = 0 # arrow
         marker.action = 0 # add the marker
         marker.pose.position.z = 0.5
-        marker.scale.x = 0.1
-        marker.scale.y = 0.25
-        marker.scale.z = 0.25
-        marker.color.a = 1.0
-        marker.color.r = 1.0
-        marker.color.g = 1.0
-        marker.color.b = 0.0
+        marker.scale.x = 0.1; marker.scale.y = 0.25; marker.scale.z = 0.25
+        marker.color.a = 1.0; marker.color.r = 1.0; marker.color.g = 1.0; marker.color.b = 0.0
 
         pt1 = Point()
-        pt1.x = loc1[0]
-        pt1.y = loc1[1]
+        pt1.x = loc1[0]; pt1.y = loc1[1]
         marker.points.append(pt1)
 
         pt2 = Point()
-        pt2.x = loc2[0]
-        pt2.y = loc2[1]
+        pt2.x = loc2[0]; pt2.y = loc2[1]
         marker.points.append(pt2)
-        
         return marker
 
-    def create_waypoint_marker_array(self, curr_pos, seq, locs):
+    def create_plan_marker_array(self, curr_pos, seq, locs):
+        """ Given a plan for an activity sequence, creates a Marker arrow message for every pair of consecutive (different) workstations in the plan,
+        then stores them all in a MarkerArray message for RViZ visualization """
         markerArray = MarkerArray()
-        loc1 = curr_pos
-        id = 0
+        loc1 = curr_pos; id = 0
         for a in range(len(seq)):
             loc2 = locs[list(seq[a].values())[0]]
             if self.calc_euclidean_distance(loc1, loc2) > 10**-3:
-                marker = self.create_waypoint_marker(loc1, loc2)
+                marker = self.create_plan_marker(loc1, loc2)
                 marker.id = id
                 markerArray.markers.append(marker)
                 id += 1
